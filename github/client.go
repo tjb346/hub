@@ -146,6 +146,26 @@ func (client *Client) CreatePullRequest(project *Project, params map[string]inte
 	return
 }
 
+func (client *Client) UpdatePullRequest(project *Project, params map[string]interface{}, pr *PullRequest) (err error) {
+	api, err := client.simpleAPI()
+	if err != nil {
+		return
+	}
+
+	res, err := api.PatchJSON(fmt.Sprintf("repos/%s/%s/pulls/%d", project.Owner, project.Name, pr.Number), params)
+	if err = checkStatus(200, "updating pull request", res, err); err != nil {
+		if res != nil && res.StatusCode == 404 {
+			projectURL := strings.SplitN(project.WebURL("", "", ""), "://", 2)[1]
+			err = fmt.Errorf("%s\nAre you sure that %s exists?", err, projectURL)
+		}
+		return
+	}
+
+	err = res.Unmarshal(pr)
+
+	return
+}
+
 type PullRequestMergeResponse struct {
 	SHA     string
 	Merged  bool

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -205,6 +206,21 @@ hub-issue(1), hub-pull-request(1), hub(1)
 		`,
 	}
 
+	cmdUpdatePr = &Command{
+		Key: "update",
+		Run: updatePr,
+		KnownFlags: `
+		-m, --message MESSAGE
+		--no-edit
+		-F, --file FILE
+		-e, --edit
+		-u, --url
+		-c, --copy
+		-f, --format FORMAT
+		--color
+		`,
+	}
+
 	cmdMergePr = &Command{
 		Key: "merge",
 		Run: mergePr,
@@ -223,6 +239,7 @@ func init() {
 	cmdPr.Use(cmdListPulls)
 	cmdPr.Use(cmdCheckoutPr)
 	cmdPr.Use(cmdShowPr)
+	cmdPr.Use(cmdUpdatePr)
 	cmdPr.Use(cmdMergePr)
 	CmdRunner.Use(cmdPr)
 }
@@ -351,6 +368,88 @@ func showPr(command *Command, args *Args) {
 		utils.Check(err)
 		openURL = pr.HTMLURL
 	}
+
+	args.NoForward()
+	if format := args.Flag.Value("--format"); format != "" {
+		if pr == nil {
+			pr, err = gh.PullRequest(baseProject, strconv.Itoa(prNumber))
+			utils.Check(err)
+		}
+		colorize := colorizeOutput(args.Flag.HasReceived("--color"), args.Flag.Value("--color"))
+		ui.Println(formatPullRequest(*pr, format, colorize))
+		return
+	}
+
+	printURL := args.Flag.Bool("--url")
+	copyURL := args.Flag.Bool("--copy")
+
+	printBrowseOrCopy(args, openURL, !printURL && !copyURL, copyURL)
+}
+
+func updatePr(command *Command, args *Args) {
+	localRepo, err := github.LocalRepo()
+	utils.Check(err)
+
+	baseProject, err := localRepo.MainProject()
+	utils.Check(err)
+
+	host, err := github.CurrentConfig().PromptForHost(baseProject.Host)
+	utils.Check(err)
+	gh := github.NewClientWithHost(host)
+
+	words := args.Words()
+	openURL := ""
+	prNumber := 0
+	var pr *github.PullRequest
+
+	if len(words) > 0 {
+		if prNumber, err = strconv.Atoi(words[0]); err == nil {
+			openURL = baseProject.WebURL("", "", fmt.Sprintf("pull/%d", prNumber))
+		} else {
+			utils.Check(fmt.Errorf("invalid pull request number: '%s'", words[0]))
+		}
+	} else {
+		pr, err = findCurrentPullRequest(localRepo, gh, baseProject, args.Flag.Value("--head"))
+		utils.Check(err)
+		openURL = pr.HTMLURL
+	}
+
+	messageBuilder := &github.MessageBuilder{
+		Filename: "PULLREQ_EDITMSG",
+		Title:    pr.Title,
+		Message:  pr.Body,
+	}
+
+	flagPullRequestMessage := args.Flag.AllValues("--message")
+	flagPullRequestEdit := args.Flag.Bool("--edit")
+
+	if len(flagPullRequestMessage) > 0 {
+		messageBuilder.Message = strings.Join(flagPullRequestMessage, "\n\n")
+		messageBuilder.Edit = flagPullRequestEdit
+	} else if args.Flag.HasReceived("--file") {
+		messageBuilder.Message, err = msgFromFile(args.Flag.Value("--file"))
+		utils.Check(err)
+		messageBuilder.Edit = flagPullRequestEdit
+	} else {
+		messageBuilder.Edit = true
+	}
+
+	title, body, err := messageBuilder.Extract()
+	utils.Check(err)
+
+	params := make(map[string]interface{})
+	if title != "" && pr.Title != title {
+		params["title"] = title
+	}
+	if body != "" && pr.Body != body {
+		params["body"] = body
+	}
+	if len(params) == 0 {
+		utils.Check(errors.New("no changes"))
+	}
+
+	err = gh.UpdatePullRequest(baseProject, params, pr)
+	utils.Check(err)
 
 	args.NoForward()
 	if format := args.Flag.Value("--format"); format != "" {
